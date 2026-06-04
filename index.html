@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta charset="utf-8">
+<title>SDM Robotics - Personaje con Salto Perfecto</title>
+
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.1.0/dist/aframe-extras.min.js"></script>
+
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; font-family: monospace; }
+    
+    .controls-panel {
+        position: fixed; bottom: 20px; left: 20px; right: 20px;
+        background: rgba(0,0,0,0.85); padding: 15px; border-radius: 12px;
+        color: #ffaa00; text-align: center; z-index: 1000;
+        backdrop-filter: blur(8px); border: 1px solid #ffaa00;
+        pointer-events: none;
+    }
+    .controls-panel kbd {
+        background: #333; padding: 3px 8px; border-radius: 5px;
+        color: #ffaa00; margin: 0 3px;
+    }
+    .status {
+        position: fixed; top: 20px; left: 20px;
+        background: rgba(0,0,0,0.8); padding: 10px 20px;
+        border-radius: 8px; color: #0f0; z-index: 1000;
+        border-left: 3px solid #ffaa00; pointer-events: none;
+        font-family: monospace;
+        font-size: 14px;
+    }
+    .info {
+        position: fixed; top: 20px; right: 20px;
+        background: rgba(0,0,0,0.8); padding: 10px 20px;
+        border-radius: 8px; color: #ffaa00; font-size: 12px;
+        z-index: 1000; text-align: right; pointer-events: none;
+        font-family: monospace;
+    }
+    .anim-status {
+        position: fixed; bottom: 100px; left: 20px;
+        background: rgba(0,0,0,0.7); padding: 6px 12px;
+        border-radius: 5px; font-size: 10px; color: #aaa;
+        pointer-events: none;
+        font-family: monospace;
+    }
+</style>
+</head>
+
+<body>
+
+<div class="status">
+    🎬 <span id="currentAnim">CARGANDO...</span>
+</div>
+
+<div class="info">
+    📍 X:<span id="posX">0</span> Z:<span id="posZ">0</span> Y:<span id="posY">0.5</span><br>
+    🏃 <span id="speedState">normal</span>
+</div>
+
+<div class="anim-status" id="animStatus">
+    Clip: ---
+</div>
+
+<div class="controls-panel">
+    <h3>🎮 CONTROLES</h3>
+    <p>
+        <kbd>W A S D</kbd> → Mover personaje<br>
+        <kbd>ESPACIO</kbd> → Saltar | <kbd>R</kbd> → Reset | <kbd>SHIFT</kbd> → Correr
+    </p>
+    <p style="color: #aaa; font-size: 10px;">
+        🦘 Salto con anticipación física y offset de animación
+    </p>
+
+</div>
+
+<a-scene background="color:#0a0a0a" stats="false" renderer="antialias: true; alpha: false" >
+
+    <a-entity light="type: ambient; intensity: 0.6"></a-entity>
+    <a-entity light="type: directional; intensity: 1.2" position="5 10 3"></a-entity>
+    <a-entity light="type: point; intensity: 0.8" position="0 3 0" color="#ffaa66"></a-entity>
+
+
+
+    <!-- PERSONAJE -->
+    <a-entity id="player" position="0 0.5 0">
+        <a-entity id="playerModel"
+            gltf-model="personaje7/perosnaje_001.gltf" 
+            scale="2.5 2.5 2.5"
+            position="0 -0.6 0">
+        </a-entity>
+        
+        <a-entity id="sombra"
+            geometry="primitive: circle; radius: 1.2; segments: 32"
+            material="color: #000000; opacity: 0.1; transparent: true; side: double"
+            rotation="-90 0 0"
+            position="0 -0.25 0">
+        </a-entity>
+
+    </a-entity>
+
+    <!-- CÁMARA -->
+    <a-entity id="cameraRig" position="0 1.6 5">
+        <a-camera look-controls wasd-controls-enabled="false"></a-camera>
+    </a-entity>
+
+
+
+
+
+</a-scene>
+
+<script>
+// =====================================================
+// NOMBRES DE ANIMACIONES
+// =====================================================
+const ANIMATIONS = {
+    1: "Armature.001|mixamo.com|Layer0",
+    2: "Armature.001|mixamo.com|Layer0.001",
+    3: "Armature.001|mixamo.com|Layer0.002",
+    4: "Armature.001|mixamo.com|Layer0.003",
+    5: "Armature.001|mixamo.com|Layer0.004",
+    6: "Armature.001|mixamo.com|Layer0.005",
+    7: "Armature.001|mixamo.com|Layer0.006",
+    8: "Armature.001|mixamo.com|Layer0.007",
+    9: "Armature|mixamo.com|Layer0",
+    0: "Armature|mixamo.com|Layer0.001"
+};
+
+const IDLE_ANIMS = [1, 3, 6];
+const RUN_ANIMS = [2, 4];
+const WALK_ANIM = 5;
+const JUMP_MOVING = 7;
+const JUMP_IDLE = 8;
+
+// =====================================================
+// CONFIGURACIÓN FINA DEL SALTO
+// =====================================================
+const JUMP_CONFIG = {
+    [JUMP_IDLE]: {
+        duration: 1.8,           // Duración total de la animación
+        height: 2.0,             // Altura máxima
+        startOffset: 0.5,       // Saltar frames iniciales (evita posición T)
+        peakDelay: 0.5,         // Delay físico antes de subir (agacharse)
+        peakTime: 0.5           // Momento del pico en la animación
+    },
+    [JUMP_MOVING]: {
+        duration: 0.7,
+        height: 1.0,
+        startOffset: 0.05,
+        peakDelay: 0.08,
+        peakTime: 0.4
+    }
+};
+
+let modelReady = false;
+let currentClipName = "";
+
+// Estado del personaje
+let isMoving = false;
+let isRunning = false;
+let isJumping = false;
+let jumpStartTime = 0;
+let jumpConfigCurrent = null;
+let jumpTimer = null;
+let jumpPhysicsTimer = null;  // Timer para el delay físico
+
+// Velocidades
+let walkSpeed = 4.0;
+let runSpeed = 8.0;
+let currentSpeed = walkSpeed;
+
+// Inputs
+const keys = { w: false, s: false, a: false, d: false };
+
+// Referencias
+let player = null;
+let playerModel = null;
+let cameraRig = null;
+
+// =====================================================
+// UTILITIES
+// =====================================================
+function randomItem(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function saveNormalAnimation() {
+    if (isMoving) {
+        if (isRunning) return randomItem(RUN_ANIMS);
+        else return WALK_ANIM;
+    } else {
+        return randomItem(IDLE_ANIMS);
+    }
+}
+
+function applyNormalAnimation() {
+    if (!playerModel || !modelReady || isJumping) return;
+    
+    const animNumber = saveNormalAnimation();
+    const animName = ANIMATIONS[animNumber];
+    if (!animName) return;
+    
+    let label = "";
+    if (animNumber === WALK_ANIM) label = "WALK 🚶";
+    else if (RUN_ANIMS.includes(animNumber)) label = "RUN 🏃";
+    else label = "IDLE 💤";
+    
+    playerModel.setAttribute('animation-mixer', {
+        clip: animName,
+        loop: 'repeat',
+        crossFadeDuration: 0.15
+    });
+    
+    currentClipName = animName;
+    document.getElementById('currentAnim').innerHTML = label;
+    document.getElementById('animStatus').innerHTML = `🎞️ ${animName.substring(0, 45)}...`;
+}
+
+// =====================================================
+// ANIMACIÓN DE SALTO CON OFFSET
+// =====================================================
+function applyJumpAnimation() {
+    if (!playerModel || !modelReady) return;
+    
+    const jumpType = isMoving ? JUMP_MOVING : JUMP_IDLE;
+    jumpConfigCurrent = JUMP_CONFIG[jumpType];
+    const animName = ANIMATIONS[jumpType];
+    
+    if (!animName) return;
+    
+    // Calcular el tiempo de inicio con offset (saltar frames iniciales)
+    const startTime = jumpConfigCurrent.startOffset;
+    
+    playerModel.removeAttribute('animation-mixer');
+    
+    setTimeout(() => {
+        playerModel.setAttribute('animation-mixer', {
+            clip: animName,
+            loop: 'repeat',
+            crossFadeDuration: 0,
+            timeScale: 1.0,
+            startAt: startTime    // Comenzar desde el frame offset
+        });
+        
+        currentClipName = animName;
+        const label = isMoving ? "JUMP 🦘 (corriendo)" : "JUMP 🦘 (quieto)";
+        document.getElementById('currentAnim').innerHTML = label;
+        document.getElementById('animStatus').innerHTML = `🎞️ ${animName.substring(0, 45)} (offset:${startTime}s)`;
+    }, 10);
+}
+
+// =====================================================
+// SISTEMA DE SALTO CON DELAY FÍSICO
+// =====================================================
+function performJump() {
+    if (isJumping || !modelReady) return;
+    
+    isJumping = true;
+    jumpStartTime = performance.now() / 1000;
+    
+    // Aplicar animación de salto
+    applyJumpAnimation();
+    
+    // DELAY FÍSICO: el personaje NO sube inmediatamente (simula agacharse)
+    // Durante peakDelay segundos, se queda en el suelo o baja ligeramente
+    if (jumpPhysicsTimer) clearTimeout(jumpPhysicsTimer);
+    jumpPhysicsTimer = setTimeout(() => {
+        // Aquí comenzaría la subida real - ya está manejada por updateJumpHeight
+        console.log("🚀 Despegue físico después del anticipo");
+    }, (jumpConfigCurrent?.peakDelay || 0.08) * 1000);
+    
+    // Programar el fin del salto
+    if (jumpTimer) clearTimeout(jumpTimer);
+    jumpTimer = setTimeout(() => {
+        endJump();
+    }, (jumpConfigCurrent?.duration || 0.7) * 1000);
+}
+
+function endJump() {
+    if (!isJumping) return;
+    
+    isJumping = false;
+    
+    // Resetear posición Y a suelo
+    if (player) {
+        player.object3D.position.y = 0.5;
+    }
+    
+    // Limpiar timers
+    if (jumpTimer) { clearTimeout(jumpTimer); jumpTimer = null; }
+    if (jumpPhysicsTimer) { clearTimeout(jumpPhysicsTimer); jumpPhysicsTimer = null; }
+    
+    // Volver a la animación normal
+    setTimeout(() => {
+        if (!isJumping) {
+            applyNormalAnimation();
+        }
+    }, 50);
+}
+
+// =====================================================
+// ACTUALIZAR ALTURA DEL SALTO (con delay físico)
+// =====================================================
+function updateJumpHeight(currentTime) {
+    if (!isJumping || !jumpConfigCurrent) return;
+    
+    const elapsed = currentTime - jumpStartTime;
+    const peakDelay = jumpConfigCurrent.peakDelay;
+    
+    // Si aún estamos en el delay de anticipación, NO subir
+    if (elapsed < peakDelay) {
+        // Mantener en el suelo (quizás bajar un poco para simular agacharse)
+        const squat = Math.sin((elapsed / peakDelay) * Math.PI) * 0.05;
+        const newY = 0.5 - squat;
+        if (player) player.object3D.position.y = Math.max(0.45, newY);
+        return;
+    }
+    
+    // Tiempo de vuelo real (después del anticipo)
+    const flightTime = elapsed - peakDelay;
+    const totalFlightTime = jumpConfigCurrent.duration - peakDelay;
+    const t = Math.min(1, flightTime / totalFlightTime);
+    
+    // Curva parabólica para el salto
+    let heightFactor;
+    const peakTimeNormalized = (jumpConfigCurrent.peakTime - peakDelay) / totalFlightTime;
+    
+    if (t <= peakTimeNormalized) {
+        heightFactor = t / peakTimeNormalized;
+    } else {
+        heightFactor = 1 - (t - peakTimeNormalized) / (1 - peakTimeNormalized);
+    }
+    
+    heightFactor = Math.sin(heightFactor * Math.PI / 2);
+    const newY = 0.5 + (heightFactor * jumpConfigCurrent.height);
+    
+    if (player) {
+        player.object3D.position.y = newY;
+    }
+    
+    // Actualizar UI de altura
+    document.getElementById('posY').innerHTML = newY.toFixed(2);
+}
+
+// =====================================================
+// UPDATE ESTADO NORMAL
+// =====================================================
+function updateNormalState() {
+    if (isJumping || !modelReady) return;
+    applyNormalAnimation();
+}
+
+// =====================================================
+// VERIFICAR MODELO
+// =====================================================
+function waitForModel() {
+    if (!playerModel) return false;
+    
+    if (playerModel.object3D && playerModel.object3D.children.length > 0) {
+        if (!modelReady) {
+            modelReady = true;
+            console.log("✅ MODELO LISTO");
+            console.log("⚙️ Configuración de salto:", JUMP_CONFIG);
+            document.getElementById('currentAnim').innerHTML = "IDLE";
+            setTimeout(() => {
+                updateNormalState();
+            }, 100);
+        }
+        return true;
+    }
+    return false;
+}
+
+// =====================================================
+// INICIALIZACIÓN
+// =====================================================
+function init() {
+    player = document.querySelector('#player');
+    playerModel = document.querySelector('#playerModel');
+    cameraRig = document.querySelector('#cameraRig');
+    
+    if (!player) {
+        console.error("❌ No se encontró el personaje");
+        return;
+    }
+    
+    const camera = document.querySelector('a-camera');
+    if (camera) camera.setAttribute('wasd-controls-enabled', 'false');
+    
+    console.log("✅ Sistema iniciado - Salto con anticipación física");
+    
+    const checkInterval = setInterval(() => {
+        if (waitForModel()) {
+            clearInterval(checkInterval);
+        }
+    }, 100);
+    
+    setupInputs();
+    
+    let lastTime = 0;
+    function gameLoop(now) {
+        const nowSec = now / 1000;
+        let delta = Math.min(0.033, (now - lastTime) / 1000);
+        if (delta <= 0) delta = 0.016;
+        lastTime = now;
+        
+        if (isJumping) {
+            updateJumpHeight(nowSec);
+        }
+        
+        updateMovement(delta);
+        updateCamera();
+        updateUI();
+        requestAnimationFrame(gameLoop);
+    }
+    requestAnimationFrame(gameLoop);
+    
+    console.log("🎮 Controles listos - ESPACIO para saltar");
+}
+
+// =====================================================
+// INPUTS
+// =====================================================
+function setupInputs() {
+    window.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        
+        if (key === 'w' || key === 'arrowup') keys.w = true;
+        if (key === 's' || key === 'arrowdown') keys.s = true;
+        if (key === 'a' || key === 'arrowleft') keys.a = true;
+        if (key === 'd' || key === 'arrowright') keys.d = true;
+        
+        if (key === 'r') { resetPosition(); e.preventDefault(); }
+        
+        if (key === 'shift') {
+            isRunning = true;
+            currentSpeed = runSpeed;
+            document.getElementById('speedState').innerHTML = '🏃 SPRINT';
+            document.getElementById('speedState').style.color = '#ffaa00';
+            if (!isJumping && modelReady) updateNormalState();
+            e.preventDefault();
+        }
+        
+        if ((key === ' ' || key === 'space') && !isJumping && modelReady) {
+            performJump();
+            e.preventDefault();
+        }
+        
+        const hasInput = keys.w || keys.s || keys.a || keys.d;
+        if (hasInput !== isMoving && !isJumping && modelReady) {
+            isMoving = hasInput;
+            updateNormalState();
+        }
+    });
+    
+    window.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key === 'w' || key === 'arrowup') keys.w = false;
+        if (key === 's' || key === 'arrowdown') keys.s = false;
+        if (key === 'a' || key === 'arrowleft') keys.a = false;
+        if (key === 'd' || key === 'arrowright') keys.d = false;
+        
+        if (key === 'shift') {
+            isRunning = false;
+            currentSpeed = walkSpeed;
+            document.getElementById('speedState').innerHTML = 'normal';
+            document.getElementById('speedState').style.color = '#aaa';
+            if (!isJumping && modelReady) updateNormalState();
+        }
+        
+        const hasInput = keys.w || keys.s || keys.a || keys.d;
+        if (hasInput !== isMoving && !isJumping && modelReady) {
+            isMoving = hasInput;
+            updateNormalState();
+        }
+    });
+}
+
+function resetPosition() {
+    if (player) {
+        player.object3D.position.set(0, 0.5, 0);
+        if (isJumping) {
+            isJumping = false;
+            if (jumpTimer) clearTimeout(jumpTimer);
+            if (jumpPhysicsTimer) clearTimeout(jumpPhysicsTimer);
+            jumpTimer = null;
+            jumpPhysicsTimer = null;
+            setTimeout(() => {
+                applyNormalAnimation();
+            }, 50);
+        }
+        console.log("📍 Reset posición");
+    }
+}
+
+// =====================================================
+// MOVIMIENTO
+// =====================================================
+function updateMovement(delta) {
+    if (!player) return;
+    
+    let moveX = 0, moveZ = 0;
+    if (keys.w) moveZ -= 1;
+    if (keys.s) moveZ += 1;
+    if (keys.a) moveX -= 1;
+    if (keys.d) moveX += 1;
+    
+    if (moveX !== 0 || moveZ !== 0) {
+        if (moveX !== 0 && moveZ !== 0) { moveX *= 0.707; moveZ *= 0.707; }
+        const speed = currentSpeed * delta;
+        let newX = player.object3D.position.x + moveX * speed;
+        let newZ = player.object3D.position.z + moveZ * speed;
+        newX = Math.max(-22, Math.min(22, newX));
+        newZ = Math.max(-22, Math.min(22, newZ));
+        player.object3D.position.x = newX;
+        player.object3D.position.z = newZ;
+        const angle = Math.atan2(moveX, moveZ);
+        player.object3D.rotation.y = angle;
+    }
+}
+
+function updateCamera() {
+    if (!player || !cameraRig) return;
+    cameraRig.object3D.position.x = player.object3D.position.x;
+    cameraRig.object3D.position.z = player.object3D.position.z + 5;
+    cameraRig.object3D.position.y = player.object3D.position.y + 1.6;
+}
+
+function updateUI() {
+    if (player && player.object3D) {
+        document.getElementById('posX').innerHTML = player.object3D.position.x.toFixed(1);
+        document.getElementById('posZ').innerHTML = player.object3D.position.z.toFixed(1);
+    }
+}
+
+window.addEventListener('load', () => setTimeout(init, 500));
+</script>
+
+
+
+
+
+<!-- ===================================================== -->
+<!-- GAMEPAD TÁCTIL PARA MÓVIL -->
+<!-- ===================================================== -->
+<div id="touch-controls" style="
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 0;
+    z-index: 10000;
+    pointer-events: none;
+    display: none;
+">
+
+    <!-- ===== D-PAD IZQUIERDO (movimiento) ===== -->
+    <div id="dpad-left" style="
+        position: absolute;
+        bottom: 30px;
+        left: 20px;
+        width: 160px;
+        height: 160px;
+        pointer-events: auto;
+        background: rgba(0,0,0,0.3);
+        border-radius: 50%;
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,170,0,0.3);
+    ">
+        <!-- Botón ARRIBA -->
+        <button id="btn-up" class="dpad-btn" style="
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        ">▲</button>
+
+        <!-- Botón ABAJO -->
+        <button id="btn-down" class="dpad-btn" style="
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        ">▼</button>
+
+        <!-- Botón IZQUIERDA -->
+        <button id="btn-left" class="dpad-btn" style="
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        ">◀</button>
+
+        <!-- Botón DERECHA -->
+        <button id="btn-right" class="dpad-btn" style="
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        ">▶</button>
+
+        <!-- Centro (opcional) -->
+        <div style="
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255,170,0,0.2);
+            border: 1px solid rgba(255,170,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: #ffaa00;
+            pointer-events: none;
+        ">MOV</div>
+    </div>
+
+    <!-- ===== BOTONES DERECHOS (acciones) ===== -->
+    <div id="actions-right" style="
+        position: absolute;
+        bottom: 30px;
+        right: 20px;
+        width: 160px;
+        height: 160px;
+        pointer-events: auto;
+        background: rgba(0,0,0,0.3);
+        border-radius: 50%;
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,170,0,0.3);
+    ">
+        <!-- Botón SALTAR (A) - posición arriba -->
+        <button id="btn-jump" class="action-btn" style="
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 2px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 20px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+        ">
+            🦘<span style="font-size: 10px;">SALTAR</span>
+        </button>
+
+        <!-- Botón CORRER (B) - posición derecha -->
+        <button id="btn-sprint" class="action-btn" style="
+            position: absolute;
+            right: 10px;
+            top: 70%;
+            transform: translateY(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #ffaa00;
+            color: #ffaa00;
+            font-size: 20px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+        ">
+            🏃<span style="font-size: 10px;">CORRER</span>
+        </button>
+
+      
+
+      
+
+    </div>
+
+
+
+
+      <!-- Botón FULLSCREEN (X) - posición izquierda -->
+        <button id="btn-fullscreen" class="action-btn" style="
+            position: absolute;
+            left: 10px;
+            top: 30%;
+            transform: translateY(-50%);
+            width: 55px;
+            height: 55px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid rgba(255,170,0,0.5);
+            color: #ffaa00;
+            font-size: 20px;
+            font-weight: bold;
+            pointer-events: auto;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+        ">
+            ⛶<span style="font-size: 10px;">PANTALLA</span>
+        </button>
+
+</div>
+
+
+
+
+
+<style>
+    /* ===================================================== */
+/* CONTROLES TÁCTILES PARA MÓVIL - GAMEPAD */
+/* ===================================================== */
+.dpad-btn, .action-btn {
+    transition: all 0.05s linear;
+    touch-action: none;
+    user-select: none;
+}
+
+.dpad-btn:active, .action-btn:active {
+    transform: scale(0.92);
+    background: rgba(255,170,0,0.4) !important;
+}
+
+/* Ocultar botón VR de A-Frame */
+.a-enter-vr {
+    display: none !important;
+}
+
+/* Mostrar controles solo en móvil horizontal */
+@media (orientation: landscape) and (max-width: 1024px) {
+    #touch-controls {
+        display: block !important;
+    }
+}
+
+/* Ocultar en desktop */
+@media (min-width: 1025px) {
+    #touch-controls {
+        display: none !important;
+    }
+}
+
+/* Ajustes para pantallas pequeñas */
+@media (max-width: 800px) and (orientation: landscape) {
+    .dpad-btn, .action-btn {
+        width: 45px !important;
+        height: 45px !important;
+        font-size: 18px !important;
+    }
+    
+    .dpad-btn span, .action-btn span {
+        font-size: 8px !important;
+    }
+    
+    #dpad-left, #actions-right {
+        width: 130px !important;
+        height: 130px !important;
+    }
+    
+    #dpad-left {
+        bottom: 20px !important;
+        left: 10px !important;
+    }
+    
+    #actions-right {
+        bottom: 20px !important;
+        right: 10px !important;
+    }
+}
+</style>
+
+
+
+<script>
+// =====================================================
+// CONTROLES TÁCTILES - GAMEPAD
+// =====================================================
+function setupTouchControls() {
+    // Botones de movimiento (D-Pad)
+    const btnUp = document.getElementById('btn-up');
+    const btnDown = document.getElementById('btn-down');
+    const btnLeft = document.getElementById('btn-left');
+    const btnRight = document.getElementById('btn-right');
+    
+    // Botones de acción
+    const btnJump = document.getElementById('btn-jump');
+    const btnSprint = document.getElementById('btn-sprint');
+    const btnFullscreen = document.getElementById('btn-fullscreen');
+    const btnReset = document.getElementById('btn-reset');
+    
+    // Estado de teclas virtuales
+    let virtualKeys = { w: false, s: false, a: false, d: false };
+    
+    // Función para actualizar teclas virtuales
+    function updateVirtualKeys() {
+        const wasMoving = keys.w || keys.s || keys.a || keys.d;
+        
+        keys.w = virtualKeys.w;
+        keys.s = virtualKeys.s;
+        keys.a = virtualKeys.a;
+        keys.d = virtualKeys.d;
+        
+        const isMovingNow = keys.w || keys.s || keys.a || keys.d;
+        
+        // Actualizar estado de movimiento si cambió
+        if (wasMoving !== isMovingNow && !isJumping && modelReady) {
+            isMoving = isMovingNow;
+            updateNormalState();
+        }
+    }
+    
+    // === D-PAD: ARRIBA ===
+    if (btnUp) {
+        btnUp.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            virtualKeys.w = true;
+            updateVirtualKeys();
+            btnUp.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnUp.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            virtualKeys.w = false;
+            updateVirtualKeys();
+            btnUp.style.background = '';
+        });
+        btnUp.addEventListener('mousedown', () => {
+            virtualKeys.w = true;
+            updateVirtualKeys();
+            btnUp.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnUp.addEventListener('mouseup', () => {
+            virtualKeys.w = false;
+            updateVirtualKeys();
+            btnUp.style.background = '';
+        });
+    }
+    
+    // === D-PAD: ABAJO ===
+    if (btnDown) {
+        btnDown.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            virtualKeys.s = true;
+            updateVirtualKeys();
+            btnDown.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnDown.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            virtualKeys.s = false;
+            updateVirtualKeys();
+            btnDown.style.background = '';
+        });
+        btnDown.addEventListener('mousedown', () => {
+            virtualKeys.s = true;
+            updateVirtualKeys();
+            btnDown.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnDown.addEventListener('mouseup', () => {
+            virtualKeys.s = false;
+            updateVirtualKeys();
+            btnDown.style.background = '';
+        });
+    }
+    
+    // === D-PAD: IZQUIERDA ===
+    if (btnLeft) {
+        btnLeft.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            virtualKeys.a = true;
+            updateVirtualKeys();
+            btnLeft.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnLeft.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            virtualKeys.a = false;
+            updateVirtualKeys();
+            btnLeft.style.background = '';
+        });
+        btnLeft.addEventListener('mousedown', () => {
+            virtualKeys.a = true;
+            updateVirtualKeys();
+            btnLeft.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnLeft.addEventListener('mouseup', () => {
+            virtualKeys.a = false;
+            updateVirtualKeys();
+            btnLeft.style.background = '';
+        });
+    }
+    
+    // === D-PAD: DERECHA ===
+    if (btnRight) {
+        btnRight.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            virtualKeys.d = true;
+            updateVirtualKeys();
+            btnRight.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnRight.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            virtualKeys.d = false;
+            updateVirtualKeys();
+            btnRight.style.background = '';
+        });
+        btnRight.addEventListener('mousedown', () => {
+            virtualKeys.d = true;
+            updateVirtualKeys();
+            btnRight.style.background = 'rgba(255,170,0,0.5)';
+        });
+        btnRight.addEventListener('mouseup', () => {
+            virtualKeys.d = false;
+            updateVirtualKeys();
+            btnRight.style.background = '';
+        });
+    }
+    
+    // === BOTÓN SALTAR ===
+    if (btnJump) {
+        btnJump.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (!isJumping && isGrounded) {
+                performJump();
+            }
+            btnJump.style.transform = 'scale(0.92)';
+            btnJump.style.background = 'rgba(255,170,0,0.5)';
+            setTimeout(() => {
+                btnJump.style.transform = '';
+                btnJump.style.background = '';
+            }, 150);
+        });
+        btnJump.addEventListener('mousedown', () => {
+            if (!isJumping && isGrounded) {
+                performJump();
+            }
+            btnJump.style.transform = 'scale(0.92)';
+            btnJump.style.background = 'rgba(255,170,0,0.5)';
+            setTimeout(() => {
+                btnJump.style.transform = '';
+                btnJump.style.background = '';
+            }, 150);
+        });
+    }
+    
+    // === BOTÓN CORRER (mantener) ===
+    if (btnSprint) {
+        btnSprint.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isRunning = true;
+            currentSpeed = runSpeed;
+            document.getElementById('speedState').innerHTML = '🏃 SPRINT';
+            document.getElementById('speedState').style.color = '#ffaa00';
+            btnSprint.style.background = 'rgba(255,170,0,0.5)';
+            if (!isJumping && isMoving) updateNormalState();
+        });
+        btnSprint.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            isRunning = false;
+            currentSpeed = walkSpeed;
+            document.getElementById('speedState').innerHTML = 'normal';
+            document.getElementById('speedState').style.color = '#aaa';
+            btnSprint.style.background = '';
+            if (!isJumping) updateNormalState();
+        });
+        btnSprint.addEventListener('mousedown', () => {
+            isRunning = true;
+            currentSpeed = runSpeed;
+            document.getElementById('speedState').innerHTML = '🏃 SPRINT';
+            document.getElementById('speedState').style.color = '#ffaa00';
+            btnSprint.style.background = 'rgba(255,170,0,0.5)';
+            if (!isJumping && isMoving) updateNormalState();
+        });
+        btnSprint.addEventListener('mouseup', () => {
+            isRunning = false;
+            currentSpeed = walkSpeed;
+            document.getElementById('speedState').innerHTML = 'normal';
+            document.getElementById('speedState').style.color = '#aaa';
+            btnSprint.style.background = '';
+            if (!isJumping) updateNormalState();
+        });
+    }
+    
+    // === BOTÓN FULLSCREEN ===
+    if (btnFullscreen) {
+        btnFullscreen.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+                btnFullscreen.style.background = 'rgba(255,170,0,0.5)';
+                setTimeout(() => btnFullscreen.style.background = '', 200);
+            } else {
+                document.exitFullscreen();
+                btnFullscreen.style.background = 'rgba(255,170,0,0.5)';
+                setTimeout(() => btnFullscreen.style.background = '', 200);
+            }
+        });
+    }
+    
+    // === BOTÓN RESET ===
+    if (btnReset) {
+        btnReset.addEventListener('click', () => {
+            resetPosition();
+            btnReset.style.background = 'rgba(255,170,0,0.5)';
+            setTimeout(() => btnReset.style.background = '', 200);
+        });
+    }
+}
+
+// Inicializar cuando el DOM esté listo
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(setupTouchControls, 1000);
+});
+</script>
+
+
+
+
+
+
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
