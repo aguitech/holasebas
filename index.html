@@ -75,11 +75,33 @@
 
 </div>
 
-<a-scene background="color:#0a0a0a" stats="false" renderer="antialias: true; alpha: false" >
+<a-scene background="color:#000" stats="false" renderer="antialias: true; alpha: false" >
 
-    <a-entity light="type: ambient; intensity: 0.6"></a-entity>
-    <a-entity light="type: directional; intensity: 1.2" position="5 10 3"></a-entity>
-    <a-entity light="type: point; intensity: 0.8" position="0 3 0" color="#ffaa66"></a-entity>
+    <!-- ========== FONDO DEGRADADO ANIMADO ========== -->
+    <!-- Sky esférico con shader custom: degradado vertical + leve "respiración" -->
+    <a-entity id="sky-gradient"
+        geometry="primitive: sphere; radius: 80; segmentsWidth: 32; segmentsHeight: 24"
+        material="side: back; shader: standard; metalness: 0; roughness: 1; transparent: false; color: #1a1a2e; emissive: #ff6b35; emissiveIntensity: 0.1"
+        position="0 0 0"
+        rotation="0 -90 0"
+        scale="-1 1 1">
+        <!-- El material estándar de A-Frame renderiza un color sólido, no degradado.
+             Para un degradado real usamos el shader gradient via componente custom. -->
+    </a-entity>
+
+    <!-- Plano grande detrás de la cámara que muestra un degradado procedural.
+         Como el sky de A-Frame no soporta degradado, usamos un plano enorme
+         con el shader custom "gradient-sky" registrado abajo. -->
+    <a-entity id="bg-gradient"
+        geometry="primitive: plane; width: 200; height: 200"
+        material="shader: gradient-sky; topColor: #0a0a1a; midColor: #4a2a5e; bottomColor: #ff6b35"
+        position="0 0 -50"
+        rotation="0 0 0">
+    </a-entity>
+
+    <a-entity light="type: ambient; intensity: 0.7"></a-entity>
+    <a-entity light="type: directional; intensity: 1.3" position="5 10 3"></a-entity>
+    <a-entity light="type: point; intensity: 1.0" position="0 3 0" color="#ffaa66"></a-entity>
 
 
 
@@ -580,6 +602,49 @@ window.addEventListener('load', () => setTimeout(init, 500));
 
 
 
+<script>
+// =====================================================
+// SHADER: gradient-sky — fondo degradado animado
+// =====================================================
+if (typeof AFRAME !== 'undefined') {
+    AFRAME.registerShader('gradient-sky', {
+        schema: {
+            topColor:    { type: 'color', default: '#0a0a1a', is: 'uniform' },
+            midColor:    { type: 'color', default: '#4a2a5e', is: 'uniform' },
+            bottomColor: { type: 'color', default: '#ff6b35', is: 'uniform' },
+            time:        { type: 'time',   is: 'uniform' }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 topColor;
+            uniform vec3 midColor;
+            uniform vec3 bottomColor;
+            uniform float time;
+            varying vec2 vUv;
+            void main() {
+                float y = vUv.y;
+                vec3 lower = mix(bottomColor, midColor, smoothstep(0.0, 0.55, y));
+                vec3 upper = mix(midColor, topColor,    smoothstep(0.45, 1.0, y));
+                vec3 col   = mix(lower, upper, smoothstep(0.4, 0.6, y));
+                float breath = 0.5 + 0.5 * sin(time * 0.4);
+                float glowBand = exp(-pow((y - 0.18) * 6.0, 2.0));
+                col += bottomColor * glowBand * (0.25 + 0.15 * breath);
+                vec2 starUv = vUv * vec2(80.0, 40.0);
+                float n = fract(sin(dot(floor(starUv), vec2(12.9898, 78.233))) * 43758.5453);
+                float star = step(0.997, n) * smoothstep(0.4, 0.95, y);
+                col += vec3(star);
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `
+    });
+}
+</script>
 </body>
 </html>
 
