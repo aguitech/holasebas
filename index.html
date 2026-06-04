@@ -543,26 +543,32 @@ window.addEventListener('load', () => setTimeout(init, 500));
 
 
 <!-- =====================================================
-     MOBILE JOYSTICK (port optimizado de freekraft.com)
-     - Joystick analógico IZQUIERDO para WASD
-     - Botones ACCIÓN a la derecha (Saltar, Correr, Reset, Fullscreen)
-     - Solo visible en touch devices
+     DUAL JOYSTICK (port optimizado de freekraft.com)
+     - Joystick IZQUIERDO: WASD (mueve al personaje)
+     - Joystick DERECHO:   cámara (mirar alrededor)
+     - Botones JUMP y RESET
+     - Solo visible en pantallas < 900px o touch devices
      ===================================================== -->
 <link rel="stylesheet" href="joystick.css">
 <div id="touch-controls">
 
-    <!-- JOYSTICK IZQUIERDO (movimiento) -->
+    <!-- JOYSTICK IZQUIERDO — movimiento (WASD) -->
     <div id="joy-move" class="joy-base">
-        <div id="joy-stick"></div>
+        <div class="joy-stick"></div>
+        <div class="joy-label">MOVE</div>
     </div>
 
-    <!-- BOTONES DE ACCIÓN (derecha) -->
-    <button id="btn-jump" class="action-btn">🦘<br>JUMP</button>
-    <button id="btn-sprint" class="action-btn">🏃<br>RUN</button>
-    <button id="btn-reset" class="action-btn">↻<br>RESET</button>
-    <button id="btn-fullscreen" class="action-btn">⛶<br>FULL</button>
+    <!-- JOYSTICK DERECHO — cámara (look) -->
+    <div id="joy-look" class="joy-base">
+        <div class="joy-stick"></div>
+        <div class="joy-label">LOOK</div>
+    </div>
 
-    <div class="mobile-hint">📱 Joystick izq · Botones der · Mouse para mirar</div>
+    <!-- BOTONES DE ACCIÓN -->
+    <button id="btn-jump" class="action-btn">🦘<br>JUMP</button>
+    <button id="btn-reset" class="action-btn">↻<br>RESET</button>
+
+    <div class="mobile-hint">📱 Joystick izq = WASD · Joystick der = mirar · 🦘 Saltar</div>
 </div>
 <script src="joystick.js"></script>
 
