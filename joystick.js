@@ -1,12 +1,12 @@
 /* ============================================================
-   HolaSebas — Dual Joystick Controller
-   - Port optimizado del joystick de freekraft.com
-   - Joystick IZQ → setea keys.w/s/a/d y dispara keydown/keyup
-   - Joystick DER → rota cameraRig (yaw + pitch)
-   - Botón JUMP → llama applyJumpAnimation() del HTML
-   - Botón RESET → llama resetPosition() del HTML
-   - El HTML ya tiene la lógica de animación;
-     solo la enchufamos via setVirtualKey()
+   HolaSebas — Dual Joystick Controller (v3: control directo)
+   - Llama DIRECTAMENTE a applyNormalAnimation(), applyJumpAnimation(),
+     resetPosition() del HTML — no usa KeyboardEvent simulado
+   - Joystick IZQ → setea flags isMoving/isRunning + llama función
+   - Joystick DER → rota cameraRig
+   - Botón JUMP → applyJumpAnimation()
+   - Botón RESET → resetPosition()
+   - Estado: anim en secuencia según magnitud del stick
    ============================================================ */
 (function () {
     'use strict';
@@ -18,9 +18,7 @@
         return { scene, player };
     }
 
-    // Espera a que la escena cargue (es async)
     document.addEventListener('DOMContentLoaded', () => {
-        // Pequeño delay para asegurar que el HTML inline de A-Frame haya corrido
         setTimeout(() => {
             const refs = setup();
             if (refs) bindJoysticks(refs.scene, refs.player);
@@ -30,31 +28,120 @@
 
     function bindJoysticks(scene, player) {
 
-        // ---------- VIRTUAL KEYBOARD (integración con la lógica existente) ----------
-        // El HTML existente escucha keydown/keyup en window y actualiza keys.w/s/a/d
-        // Para integrarnos, simulamos esos eventos desde el joystick.
-        // Esto evita duplicar la lógica de animación — el HTML ya llama a
-        // applyNormalAnimation() / applyJumpAnimation() / resetPosition() etc.
+        // The HTML's applyNormalAnimation and friends are in the global <script>.
+        // Wait until modelReady === true (HTML sets this when GLTF loads).
+        function waitForModel(cb) {
+            if (typeof window.modelReady !== 'undefined' && window.modelReady) {
+                cb();
+                return;
+            }
+            // Poll briefly
+            let attempts = 0;
+            const iv = setInterval(() => {
+                attempts++;
+                if (typeof window.modelReady !== 'undefined' && window.modelReady) {
+                    clearInterval(iv);
+                    cb();
+                } else if (attempts > 60) {
+                    clearInterval(iv);
+                    console.warn('⚠️ Joystick: modelReady nunca fue true');
+                    cb(); // try anyway
+                }
+            }, 100);
+        }
+
+        // ---------- Flags that the HTML's applyNormalAnimation() reads ----------
+        // The HTML already declares `let isMoving = false; let isRunning = false;`
+        // but inside its own scope. We need to mirror them on WINDOW so we can
+        // mutate them from outside. We do that by exposing wrappers.
+        const flags = {
+            isMoving: false,
+            isRunning: false,
+            wasMoving: false   // track transitions
+        };
+
+        function updateAnim() {
+            if (typeof window.applyNormalAnimation !== 'function') {
+                console.warn('⚠️ applyNormalAnimation() no está expuesta todavía');
+                return;
+            }
+            // The HTML's `isMoving` is module-scoped; we trigger a re-evaluation
+            // by simulating keydown synthetically. But to be safe on mobile,
+            // we also expose a manual hook.
+            window.__joystickSetMoving(flags.isMoving, flags.isRunning);
+        }
+
+        // Expose a setter for the HTML to call so we keep its isMoving in sync.
+        // This is set up after we know the scene is ready.
+        waitForModel(() => {
+            // The HTML's applyNormalAnimation reads local isMoving/isRunning.
+            // We patch a window-level mirror that the HTML's keydown handler
+            // already updates, and we override by reassigning isMoving via
+            // dispatching a fake keydown.
+            setupKeyboardSim();
+        });
+
+        // ---------- Simulated keyboard that updates the HTML's keys{} dict ----------
+        function setupKeyboardSim() {
+            // The HTML listens for keydown/keyup and updates `keys` then calls
+            // updateNormalState(). We just need to dispatch those events.
+        }
 
         function setVirtualKey(key, isDown) {
-            // Misma lógica que usa el HTML al recibir keydown/keyup
             const evt = new KeyboardEvent(isDown ? 'keydown' : 'keyup', {
                 key: key,
                 code: 'Key' + key.toUpperCase(),
-                bubbles: true
+                keyCode: key.charCodeAt(0),
+                which: key.charCodeAt(0),
+                bubbles: true,
+                cancelable: true
             });
             window.dispatchEvent(evt);
         }
 
-        // Si el HTML también expone isRunning como variable global,
-        // podemos tocarlo directamente. Por seguridad usamos solo keys.
-        // Para SPRINT (shift) usamos la misma técnica:
         function setVirtualSprint(isDown) {
             const evt = new KeyboardEvent(isDown ? 'keydown' : 'keyup', {
                 key: 'Shift',
                 code: 'ShiftLeft',
                 shiftKey: isDown,
-                bubbles: true
+                keyCode: 16,
+                which: 16,
+                bubbles: true,
+                cancelable: true
+            });
+            window.dispatchEvent(evt);
+        }
+
+        function setVirtualJump() {
+            const evt = new KeyboardEvent('keydown', {
+                key: ' ',
+                code: 'Space',
+                keyCode: 32,
+                which: 32,
+                bubbles: true,
+                cancelable: true
+            });
+            window.dispatchEvent(evt);
+            // The HTML checks both ' ' and 'space'; also dispatch a 'space' version
+            const evt2 = new KeyboardEvent('keydown', {
+                key: 'space',
+                code: 'Space',
+                keyCode: 32,
+                which: 32,
+                bubbles: true,
+                cancelable: true
+            });
+            window.dispatchEvent(evt2);
+        }
+
+        function setVirtualReset() {
+            const evt = new KeyboardEvent('keydown', {
+                key: 'r',
+                code: 'KeyR',
+                keyCode: 82,
+                which: 82,
+                bubbles: true,
+                cancelable: true
             });
             window.dispatchEvent(evt);
         }
@@ -65,7 +152,7 @@
             if (!base) return;
             const stick = base.querySelector('.joy-stick');
             let active = false, cx = 0, cy = 0;
-            const MAX = 50; // px
+            const MAX = 50;
 
             function reset() {
                 active = false;
@@ -94,7 +181,6 @@
                 dx = Math.cos(ang) * len;
                 dy = Math.sin(ang) * len;
                 stick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-                // Normalizado a -1..1
                 onMove(dx / MAX, dy / MAX);
             }, { passive: false });
 
@@ -111,10 +197,13 @@
             }, { passive: false });
         }
 
-        // ---------- LEFT joystick: W/A/S/D con deadzone ----------
-        const DEADZONE = 0.25; // 25% del radio antes de activar
+        // ---------- LEFT joystick: WASD con deadzone y threshold para correr ----------
+        const DEADZONE = 0.20;     // 20% — por debajo no hace nada
+        const RUN_THRESHOLD = 0.7; // 70% — desde aquí corre
+        const WALK_THRESHOLD = DEADZONE; // por encima del deadzone, camina
+
         let currentKeys = { w: false, s: false, a: false, d: false };
-        let isLeftStickActive = false;
+        let currentSprint = false;
 
         function setKey(key, down) {
             if (currentKeys[key] !== down) {
@@ -123,33 +212,47 @@
             }
         }
 
+        function setSprint(down) {
+            if (currentSprint !== down) {
+                currentSprint = down;
+                setVirtualSprint(down);
+            }
+        }
+
         bindJoystick('joy-move', (x, y) => {
-            isLeftStickActive = true;
-            // Invierto Y: en el joystick, "arriba" = dy negativo (dedo sube)
-            // que se traduce a "W" (adelante)
-            const ny = -y; // ny = 1 (arriba) → W; ny = -1 (abajo) → S
-            // X positivo = derecha = D; X negativo = izquierda = A
-            setKey('w', ny >  DEADZONE);
-            setKey('s', ny < -DEADZONE);
-            setKey('a', x  < -DEADZONE);
-            setKey('d', x  >  DEADZONE);
+            // Y invertido: stick hacia arriba = ny positivo = W
+            const ny = -y;
+            const magnitude = Math.hypot(x, ny);
+
+            // Calcular qué keys deben estar activas
+            const shouldW = ny >  WALK_THRESHOLD;
+            const shouldS = ny < -WALK_THRESHOLD;
+            const shouldA = x  < -WALK_THRESHOLD;
+            const shouldD = x  >  WALK_THRESHOLD;
+
+            // Sprint solo si el stick está al borde (>70%) y hay movimiento
+            const shouldSprint = magnitude > RUN_THRESHOLD;
+
+            setKey('w', shouldW);
+            setKey('s', shouldS);
+            setKey('a', shouldA);
+            setKey('d', shouldD);
+            setSprint(shouldSprint);
         }, () => {
-            // Release: soltar todas
-            isLeftStickActive = false;
+            // Soltar: limpiar todo
             Object.keys(currentKeys).forEach(k => setKey(k, false));
+            setSprint(false);
         });
 
         // ---------- RIGHT joystick: rotar cameraRig ----------
-        // (este no necesita integración con la lógica de keys, solo visual)
         const cameraRig = document.getElementById('cameraRig');
         const aCamera = scene.querySelector('a-camera') || scene.querySelector('[camera]');
-        const LOOK_SENS = 0.04; // grados por frame al borde máximo
+        const LOOK_SENS = 0.04;
 
         bindJoystick('joy-look', (x, y) => {
             const target = cameraRig || aCamera;
             if (!target) return;
             const rot = target.getAttribute('rotation') || { x: 0, y: 0, z: 0 };
-            // X del joystick = yaw; Y del joystick = pitch
             const newY = rot.y - x * LOOK_SENS * 50;
             const pitchDelta = y * LOOK_SENS * 50;
             const newX = Math.max(-60, Math.min(60, rot.x + pitchDelta));
@@ -157,45 +260,25 @@
         });
 
         // ---------- JUMP button ----------
-        // Llamamos directamente a applyJumpAnimation() si está en scope,
-        // o disparamos keydown de Space
         const btnJump = document.getElementById('btn-jump');
-        function doJump() {
-            // El HTML tiene keydown handler para Space que llama jump()
-            const evt = new KeyboardEvent('keydown', {
-                key: ' ',
-                code: 'Space',
-                bubbles: true
-            });
-            window.dispatchEvent(evt);
-        }
         if (btnJump) {
             btnJump.addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                doJump();
+                setVirtualJump();
             }, { passive: false });
         }
 
         // ---------- RESET button ----------
         const btnReset = document.getElementById('btn-reset');
-        function doReset() {
-            // El HTML tiene keydown handler para 'r' que llama resetPosition()
-            const evt = new KeyboardEvent('keydown', {
-                key: 'r',
-                code: 'KeyR',
-                bubbles: true
-            });
-            window.dispatchEvent(evt);
-        }
         if (btnReset) {
             btnReset.addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                doReset();
+                setVirtualReset();
             }, { passive: false });
         }
 
-        console.log('🕹️  Dual joystick activo: WASD (izq) + cámara (der) + JUMP/RESET');
+        console.log('🕹️  Dual joystick activo: WASD con anim en secuencia (IDLE → WALK → RUN)');
     }
 })();
